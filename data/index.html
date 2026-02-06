@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robo Soccer Bot Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .status {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status.mock {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        .joystick-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .joystick-label {
+            font-size: 16px;
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 15px;
+        }
+
+        #joystick {
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, #f0f0f0 0%, #d0d0d0 100%);
+            border-radius: 50%;
+            position: relative;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.1);
+            border: 3px solid #999;
+            cursor: pointer;
+            touch-action: none;
+        }
+
+        .joystick-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            background: #666;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0.3;
+        }
+
+        .joystick-stick {
+            position: absolute;
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            border: 4px solid white;
+            transform: translate(-50%, -50%);
+            transition: transform 0.1s ease-out;
+        }
+
+        .values {
+            margin-top: 15px;
+            display: flex;
+            gap: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+            color: #333;
+        }
+
+        .value {
+            background: #f8f8f8;
+            padding: 8px 15px;
+            border-radius: 8px;
+            border: 2px solid #ddd;
+        }
+
+        .button-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .button-label {
+            font-size: 16px;
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 15px;
+        }
+
+        #flapperBtn {
+            width: 200px;
+            height: 80px;
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.1s;
+            touch-action: none;
+        }
+
+        #flapperBtn:active {
+            transform: scale(0.95);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            background: linear-gradient(135deg, #d05adb 0%, #d53955 100%);
+        }
+
+        .flapper-status {
+            margin-top: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 18px;
+            color: #333;
+        }
+
+        .info {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f7ff;
+            border-left: 4px solid #667eea;
+            border-radius: 5px;
+            font-size: 13px;
+            color: #555;
+        }
+
+        .info strong {
+            color: #667eea;
+        }
+
+        /* Admin Control Button */
+        #adminControls {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(245, 87, 108, 0.1);
+            border: 2px solid #f5576c;
+            border-radius: 10px;
+        }
+
+        #adminControls.visible {
+            display: block;
+        }
+
+        #kickBtn {
+            width: 100%;
+            padding: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(245, 87, 108, 0.3);
+            transition: all 0.2s;
+        }
+
+        #kickBtn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(245, 87, 108, 0.4);
+        }
+
+        #kickBtn:active {
+            transform: translateY(0);
+        }
+
+        #kickBtn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .admin-label {
+            color: #f5576c;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-align: center;
+            font-size: 16px;
+        }
+
+        /* Nickname Input Modal */
+        #nicknameModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #nicknameModal.visible {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 400px;
+            width: 90%;
+        }
+
+        .modal-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-align: center;
+            color: #333;
+        }
+
+        #nicknameInput {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        #nicknameSubmit {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        /* Control Status Banner */
+        #controlBanner {
+            display: none;
+            margin-bottom: 15px;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        #controlBanner.visible {
+            display: block;
+        }
+
+        #controlBanner.active {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #c3e6cb;
+        }
+
+        #controlBanner.waiting {
+            background: #fff3cd;
+            color: #856404;
+            border: 2px solid #ffeaa7;
+        }
+
+        #controlBanner.admin-control {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+        }
+
+        /* Player List for Admin */
+        #playerList {
+            display: none;
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(102, 126, 234, 0.1);
+            border: 2px solid #667eea;
+            border-radius: 10px;
+        }
+
+        #playerList.visible {
+            display: block;
+        }
+
+        .player-item {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .player-info {
+            flex: 1;
+        }
+
+        .player-name {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .player-ip {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .player-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+
+        .player-badge.active {
+            background: #4caf50;
+            color: white;
+        }
+
+        .player-badge.waiting {
+            background: #ffa500;
+            color: white;
+        }
+
+        .player-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .player-btn {
+            padding: 8px 12px;
+            font-size: 12px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .player-btn.switch {
+            background: #667eea;
+            color: white;
+        }
+
+        .player-btn.kick {
+            background: #f5576c;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <!-- Nickname Input Modal -->
+    <div id="nicknameModal">
+        <div class="modal-content">
+            <div class="modal-title">🎮 Enter Your Nickname</div>
+            <input type="text" id="nicknameInput" placeholder="Max 10 characters" maxlength="10" autocomplete="off">
+            <button id="nicknameSubmit" onclick="submitNickname()">JOIN GAME</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1 id="title">🤖 Robo Soccer Bot</h1>
+        <div class="status" id="statusText">
+            <span id="statusMessage">Connecting...</span>
+        </div>
+
+        <!-- Control Status Banner (for players) -->
+        <div id="controlBanner"></div>
+
+        <div class="controls">
+            <!-- Joystick Section -->
+            <div class="joystick-container">
+                <div class="joystick-label">Virtual Joystick</div>
+                <div id="joystick">
+                    <div class="joystick-center"></div>
+                    <div class="joystick-stick" id="stick"></div>
+                </div>
+                <div class="values">
+                    <div class="value">X: <span id="xValue">0</span></div>
+                    <div class="value">Y: <span id="yValue">0</span></div>
+                </div>
+            </div>
+
+            <!-- Flapper Button Section -->
+            <div class="button-container">
+                <div class="button-label">Flapper Control</div>
+                <button id="flapperBtn">⚡ KICK</button>
+                <div class="flapper-status">F: <span id="flapperValue">0</span></div>
+            </div>
+        </div>
+
+        <!-- Player List (only visible to admin) -->
+        <div id="playerList">
+            <div class="admin-label">👥 CONNECTED PLAYERS</div>
+            <div id="playerListContent"></div>
+        </div>
+
+        <!-- Admin Controls (only visible to admin) -->
+        <div id="adminControls">
+            <div class="admin-label">🔐 ADMIN CONTROLS</div>
+            <button id="kickBtn" onclick="kickPlayer()">👞 KICK CURRENT PLAYER</button>
+        </div>
+
+        <div class="info">
+            <strong>Instructions:</strong> Drag the joystick to move. Press KICK button to activate flapper.
+        </div>
+    </div>
+
+    <script src="controller.js"></script>
+</body>
+</html>
