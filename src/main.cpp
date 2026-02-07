@@ -14,6 +14,9 @@ WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 bool telnetConnected = false;
 
+// Telnet verbosity control
+#define VERBOSE_CONNECTIONS false  // Set to false to reduce connection spam
+
 // =============================================================================
 // WiFi Access Point Configuration
 // =============================================================================
@@ -97,9 +100,10 @@ const int MOTOR_PWM_RESOLUTION = 8;   // 8-bit (0-255)
 const int SERVO_PWM_FREQ = 50;        // 50Hz for servo
 const int SERVO_PWM_RESOLUTION = 16;  // 16-bit for precise control
 
-// Servo angles (from reference code)
-const int servo0Deg = 1638;   // ~500us pulse (0°)
+// Servo angles - CORRECTED for standard servo (1000-2000µs range)
+const int servo0Deg = 3277;   // ~1000us pulse (0°) - was 1638
 const int servo90Deg = 4915;  // ~1500us pulse (90°)
+const int servo180Deg = 6554; // ~2000us pulse (180°)
 const int kickAngle = 50;     // Kick angle in degrees
 
 // =============================================================================
@@ -115,7 +119,7 @@ unsigned long lastControlTime = 0;
 
 // Control output throttling
 unsigned long lastControlPrint = 0;
-const unsigned long CONTROL_PRINT_INTERVAL = 200;  // Print every 200ms max
+const unsigned long CONTROL_PRINT_INTERVAL = 500;  // Print every 500ms max (was 200ms)
 int lastPrintedX = 0;
 int lastPrintedY = 0;
 bool lastPrintedFlap = false;
@@ -128,7 +132,7 @@ Adafruit_NeoPixel neopixel(NUM_PIXELS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 // Battery monitoring
 float batteryVoltage = 0.0;
 unsigned long lastBatteryRead = 0;
-const unsigned long BATTERY_READ_INTERVAL = 5000;  // Read every 5 seconds
+const unsigned long BATTERY_READ_INTERVAL = 10000;  // Read every 10 seconds (was 5s)
 
 // Voltage divider ratio (10k + 10k = divide by 2)
 const float VOLTAGE_DIVIDER_RATIO = 2.0;
@@ -211,7 +215,8 @@ void telnetPrint(const String& message) {
 void telnetPrintln(const String& message) {
   Serial.println(message);
   if (telnetConnected && telnetClient && telnetClient.connected()) {
-    telnetClient.println(message);
+    telnetClient.print(message);
+    telnetClient.print("\r\n");  // Proper Telnet line ending
   }
 }
 
@@ -224,7 +229,10 @@ void telnetPrintf(const char* format, ...) {
   
   Serial.print(buffer);
   if (telnetConnected && telnetClient && telnetClient.connected()) {
-    telnetClient.print(buffer);
+    // Replace \n with \r\n for proper Telnet display
+    String output = String(buffer);
+    output.replace("\n", "\r\n");
+    telnetClient.print(output);
   }
 }
 
@@ -251,6 +259,7 @@ void handleTelnet() {
     telnetConnected = true;
     telnetPrintln("\n=== Telnet Connected ===");
     telnetPrintln("Robo Soccer Bot Telnet Monitor");
+    telnetPrintln("Commands: 't' = test servo");
     telnetPrintln("========================\n");
   }
   
@@ -260,6 +269,35 @@ void handleTelnet() {
       telnetClient.stop();
       telnetConnected = false;
       Serial.println("[Telnet] Client disconnected");
+      return;
+    }
+    
+    // Check for commands from Telnet client
+    if (telnetClient.available()) {
+      char cmd = telnetClient.read();
+      if (cmd == 't' || cmd == 'T') {
+        telnetPrintln("\n=== SERVO TEST ===");
+        // Test 0 degrees
+        ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
+        telnetPrintf("Position: 0 deg (PWM: %d)\n", servo0Deg);
+        delay(1000);
+        
+        // Test 45 degrees
+        int duty45 = map(45, 0, 90, servo0Deg, servo90Deg);
+        ledcWrite(SERVO_PWM_CHANNEL, duty45);
+        telnetPrintf("Position: 45 deg (PWM: %d)\n", duty45);
+        delay(1000);
+        
+        // Test 90 degrees
+        ledcWrite(SERVO_PWM_CHANNEL, servo90Deg);
+        telnetPrintf("Position: 90 deg (PWM: %d)\n", servo90Deg);
+        delay(1000);
+        
+        // Return to 0
+        ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
+        telnetPrintln("Returned to 0 deg");
+        telnetPrintln("==================\n");
+      }
     }
   }
 }
@@ -359,21 +397,42 @@ void updateMotors() {
 void setupServo() {
   ledcSetup(SERVO_PWM_CHANNEL, SERVO_PWM_FREQ, SERVO_PWM_RESOLUTION);
   ledcAttachPin(SERVO_PIN, SERVO_PWM_CHANNEL);
-  ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);  // Initialize to 0 degrees
   
-  telnetPrintln("Servo initialized");
+  telnetPrintln("Servo initializing...");
+  telnetPrintf("  Channel: %d\n", SERVO_PWM_CHANNEL);
+  telnetPrintf("  Frequency: %d Hz\n", SERVO_PWM_FREQ);
+  telnetPrintf("  Resolution: %d bit\n", SERVO_PWM_RESOLUTION);
+  telnetPrintf("  GPIO Pin: %d\n", SERVO_PIN);
+  
+  // Test servo with visible movement
+  telnetPrintln("  Testing 90 degrees for 2 seconds...");
+  ledcWrite(SERVO_PWM_CHANNEL, servo90Deg);
+  delay(2000);
+  
+  telnetPrintln("  Returning to 0 degrees...");
+  ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
+  delay(1000);
+  
+  telnetPrintln("Servo initialized and tested");
 }
 
 void updateFlapper() {
   unsigned long currentMillis = millis();
 
+  // Debug: Show current state every time flapState is true
+  static unsigned long lastDebug = 0;
+  if (flapState && currentMillis - lastDebug > 1000) {
+    telnetPrintf("[DEBUG] flapState=true, kicking=%d, coolingDown=%d\n", kicking, coolingDown);
+    lastDebug = currentMillis;
+  }
+
   if (!kicking && !coolingDown && flapState) {
-    // Start kick - calculate duty cycle for kick angle
-    int kickDuty = map(kickAngle, 0, 180, servo0Deg, servo90Deg * 2);
+    // Start kick - calculate duty cycle for kick angle (fixed mapping)
+    int kickDuty = map(kickAngle, 0, 90, servo0Deg, servo90Deg);
     ledcWrite(SERVO_PWM_CHANNEL, kickDuty);
     previousMillis = currentMillis;
     kicking = true;
-    telnetPrintln("KICK START");
+    telnetPrintf("KICK START (PWM: %d, Angle: %d deg)\n", kickDuty, kickAngle);
     
     // Trigger white flash for kick feedback
     showingWhiteFlash = true;
@@ -384,11 +443,11 @@ void updateFlapper() {
     kicking = false;
     coolingDown = true;
     cooldownStart = currentMillis;
-    telnetPrintln("KICK END - cooling down");
+    telnetPrintf("KICK END - returning to 0 deg (PWM: %d)\n", servo0Deg);
   } else if (coolingDown && currentMillis - cooldownStart >= kickCooldown) {
     // Cooldown complete, ready for next kick
     coolingDown = false;
-    telnetPrintln("COOLDOWN COMPLETE");
+    telnetPrintln("COOLDOWN COMPLETE - ready for next kick");
   }
 }
 
@@ -520,6 +579,9 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     data[len] = 0;  // Null-terminate
     
+    // DEBUG: Show raw JSON
+    telnetPrintf("[RAW JSON] %s\n", (char*)data);
+    
     // Parse JSON
     StaticJsonDocument<300> doc;
     DeserializationError error = deserializeJson(doc, (char*)data);
@@ -596,14 +658,32 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     // Extract control values
     int newX = doc["x"] | 0;
     int newY = doc["y"] | 0;
-    bool newF = doc["f"] | false;
+    // FIX: JavaScript sends 0/1, not true/false, so parse as int
+    bool newF = (doc["f"] | 0) != 0;
+    
+    // DEBUG: Show parsed values
+    telnetPrintf("[PARSED] x=%d, y=%d, f=%d\n", newX, newY, newF);
 
     // Admin has priority - always accept admin commands
     // Player commands only accepted if admin is not moving
     if (isAdmin || !isAdminControlling) {
       joyX = newX;
       joyY = newY;
-      flapState = newF;
+      
+      // Detect flapper state change and log it
+      if (newF != flapState) {
+        flapState = newF;
+        telnetPrintf("[FLAPPER] Button %s (was %d, now %d)\n", 
+                      flapState ? "PRESSED" : "RELEASED", !flapState, flapState);
+      } else if (newF) {
+        // Button held - show state occasionally
+        static unsigned long lastHeldMsg = 0;
+        if (millis() - lastHeldMsg > 2000) {
+          telnetPrintf("[FLAPPER] Button HELD (flapState=%d, kicking=%d, cooling=%d)\n", 
+                        flapState, kicking, coolingDown);
+          lastHeldMsg = millis();
+        }
+      }
       
       // Track if admin is actively moving joystick
       if (isAdmin) {
@@ -643,14 +723,18 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
                       AwsEventType type, void *arg, uint8_t *data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT: {
-      telnetPrintf("WebSocket client #%u connected from %s\n", 
-                    client->id(), client->remoteIP().toString().c_str());
+      if (VERBOSE_CONNECTIONS) {
+        telnetPrintf("WebSocket client #%u connected from %s\\n", 
+                      client->id(), client->remoteIP().toString().c_str());
+      }
       
       // Get client's MAC address from IP
       uint8_t mac[6];
       bool macFound = getClientMAC(client->remoteIP(), mac);
       String macStr = macFound ? macToString(mac) : "UNKNOWN";
-      telnetPrintf("Client MAC: %s\n", macStr.c_str());
+      if (VERBOSE_CONNECTIONS) {
+        telnetPrintf("Client MAC: %s\\n", macStr.c_str());
+      }
       
       // Check if this is an admin device
       if (macFound && isAdminMAC(mac)) {
