@@ -6,6 +6,7 @@
 #include <LittleFS.h>
 #include <Adafruit_NeoPixel.h>
 #include <esp_wifi.h>
+#include <ESP32Servo.h>  // Proper servo library with timer management
 
 // =============================================================================
 // Telnet Server Configuration
@@ -75,6 +76,9 @@ void broadcastPlayerList();
 // =============================================================================
 #define SERVO_PIN 6
 
+// Servo object using ESP32Servo library (handles timers automatically)
+Servo flapperServo;
+
 // =============================================================================
 // NeoPixel and Battery Monitor Pin Definitions
 // =============================================================================
@@ -96,15 +100,9 @@ const int SERVO_PWM_CHANNEL = 4;
 const int MOTOR_PWM_FREQ = 1000;      // 1kHz
 const int MOTOR_PWM_RESOLUTION = 8;   // 8-bit (0-255)
 
-// Servo PWM settings
-const int SERVO_PWM_FREQ = 50;        // 50Hz for servo
-const int SERVO_PWM_RESOLUTION = 16;  // 16-bit for precise control
-
-// Servo angles - CORRECTED for standard servo (1000-2000µs range)
-const int servo0Deg = 3277;   // ~1000us pulse (0°) - was 1638
-const int servo90Deg = 4915;  // ~1500us pulse (90°)
-const int servo180Deg = 6554; // ~2000us pulse (180°)
-const int kickAngle = 50;     // Kick angle in degrees
+// Servo angles (ESP32Servo library uses standard degrees 0-180)
+const int servoRestAngle = 0;      // Rest position
+const int servoKickAngle = 50;     // Kick position
 
 // =============================================================================
 // Control State Variables
@@ -156,6 +154,7 @@ const long kickCooldown = 50;     // Delay between repeated kicks
 bool kicking = false;
 bool coolingDown = false;
 unsigned long cooldownStart = 0;
+bool kickRequested = false;       // Edge-triggered kick request (INITIALIZED to false)
 
 // White flash feedback
 bool showingWhiteFlash = false;
@@ -278,24 +277,23 @@ void handleTelnet() {
       if (cmd == 't' || cmd == 'T') {
         telnetPrintln("\n=== SERVO TEST ===");
         // Test 0 degrees
-        ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
-        telnetPrintf("Position: 0 deg (PWM: %d)\n", servo0Deg);
+        flapperServo.write(servoRestAngle);
+        telnetPrintf("Position: %d deg\n", servoRestAngle);
         delay(1000);
         
         // Test 45 degrees
-        int duty45 = map(45, 0, 90, servo0Deg, servo90Deg);
-        ledcWrite(SERVO_PWM_CHANNEL, duty45);
-        telnetPrintf("Position: 45 deg (PWM: %d)\n", duty45);
+        flapperServo.write(45);
+        telnetPrintln("Position: 45 deg");
         delay(1000);
         
-        // Test 90 degrees
-        ledcWrite(SERVO_PWM_CHANNEL, servo90Deg);
-        telnetPrintf("Position: 90 deg (PWM: %d)\n", servo90Deg);
+        // Test kick angle
+        flapperServo.write(servoKickAngle);
+        telnetPrintf("Position: %d deg (kick)\n", servoKickAngle);
         delay(1000);
         
         // Return to 0
-        ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
-        telnetPrintln("Returned to 0 deg");
+        flapperServo.write(servoRestAngle);
+        telnetPrintf("Returned to %d deg\n", servoRestAngle);
         telnetPrintln("==================\n");
       }
     }
@@ -395,55 +393,57 @@ void updateMotors() {
 // =============================================================================
 
 void setupServo() {
-  ledcSetup(SERVO_PWM_CHANNEL, SERVO_PWM_FREQ, SERVO_PWM_RESOLUTION);
-  ledcAttachPin(SERVO_PIN, SERVO_PWM_CHANNEL);
-  
   telnetPrintln("Servo initializing...");
-  telnetPrintf("  Channel: %d\n", SERVO_PWM_CHANNEL);
-  telnetPrintf("  Frequency: %d Hz\n", SERVO_PWM_FREQ);
-  telnetPrintf("  Resolution: %d bit\n", SERVO_PWM_RESOLUTION);
   telnetPrintf("  GPIO Pin: %d\n", SERVO_PIN);
+  telnetPrintln("  Using ESP32Servo library (dedicated timer)");
+  
+  // CRITICAL: Use timer 1 explicitly (motors use timer 0)
+  ESP32PWM::allocateTimer(1);
+  flapperServo.setPeriodHertz(50);  // Standard 50Hz servo
+  flapperServo.attach(SERVO_PIN, 1000, 2000);  // Min/max pulse width in microseconds
   
   // Test servo with visible movement
-  telnetPrintln("  Testing 90 degrees for 2 seconds...");
-  ledcWrite(SERVO_PWM_CHANNEL, servo90Deg);
+  telnetPrintf("  Testing %d degrees for 2 seconds...\n", servoKickAngle);
+  flapperServo.write(servoKickAngle);
   delay(2000);
   
   telnetPrintln("  Returning to 0 degrees...");
-  ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
+  flapperServo.write(servoRestAngle);
   delay(1000);
   
-  telnetPrintln("Servo initialized and tested");
+  telnetPrintln("Servo initialized and tested - should have moved!");
 }
 
 void updateFlapper() {
   unsigned long currentMillis = millis();
 
-  // Debug: Show current state every time flapState is true
-  static unsigned long lastDebug = 0;
-  if (flapState && currentMillis - lastDebug > 1000) {
-    telnetPrintf("[DEBUG] flapState=true, kicking=%d, coolingDown=%d\n", kicking, coolingDown);
-    lastDebug = currentMillis;
-  }
-
-  if (!kicking && !coolingDown && flapState) {
-    // Start kick - calculate duty cycle for kick angle (fixed mapping)
-    int kickDuty = map(kickAngle, 0, 90, servo0Deg, servo90Deg);
-    ledcWrite(SERVO_PWM_CHANNEL, kickDuty);
+  // Check if kick was requested and we're ready to kick
+  if (kickRequested && !kicking && !coolingDown) {
+    // Start kick - move to kick angle
+    telnetPrintf(">>> SERVO WRITE: %d degrees <<<\n", servoKickAngle);
+    flapperServo.write(servoKickAngle);
     previousMillis = currentMillis;
     kicking = true;
-    telnetPrintf("KICK START (PWM: %d, Angle: %d deg)\n", kickDuty, kickAngle);
+    kickRequested = false;  // Clear the request
+    telnetPrintf("KICK START (Angle: %d deg)\n", servoKickAngle);
     
     // Trigger white flash for kick feedback
     showingWhiteFlash = true;
     whiteFlashStart = currentMillis;
-  } else if (kicking && currentMillis - previousMillis >= kickDelay) {
+  } else if (kickRequested && (kicking || coolingDown)) {
+    // Kick requested but blocked by state machine
+    telnetPrintf("[FLAPPER] Kick blocked (kicking=%d, cooling=%d)\n", kicking, coolingDown);
+    kickRequested = false;  // Clear to avoid spam
+  }
+  
+  if (kicking && currentMillis - previousMillis >= kickDelay) {
     // Finish kick - return to 0 degrees
-    ledcWrite(SERVO_PWM_CHANNEL, servo0Deg);
+    telnetPrintf(">>> SERVO WRITE: %d degrees <<<\n", servoRestAngle);
+    flapperServo.write(servoRestAngle);
     kicking = false;
     coolingDown = true;
     cooldownStart = currentMillis;
-    telnetPrintf("KICK END - returning to 0 deg (PWM: %d)\n", servo0Deg);
+    telnetPrintf("KICK END - returning to %d deg\n", servoRestAngle);
   } else if (coolingDown && currentMillis - cooldownStart >= kickCooldown) {
     // Cooldown complete, ready for next kick
     coolingDown = false;
@@ -579,9 +579,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     data[len] = 0;  // Null-terminate
     
-    // DEBUG: Show raw JSON
-    telnetPrintf("[RAW JSON] %s\n", (char*)data);
-    
     // Parse JSON
     StaticJsonDocument<300> doc;
     DeserializationError error = deserializeJson(doc, (char*)data);
@@ -660,9 +657,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     int newY = doc["y"] | 0;
     // FIX: JavaScript sends 0/1, not true/false, so parse as int
     bool newF = (doc["f"] | 0) != 0;
-    
-    // DEBUG: Show parsed values
-    telnetPrintf("[PARSED] x=%d, y=%d, f=%d\n", newX, newY, newF);
 
     // Admin has priority - always accept admin commands
     // Player commands only accepted if admin is not moving
@@ -673,15 +667,12 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
       // Detect flapper state change and log it
       if (newF != flapState) {
         flapState = newF;
-        telnetPrintf("[FLAPPER] Button %s (was %d, now %d)\n", 
-                      flapState ? "PRESSED" : "RELEASED", !flapState, flapState);
-      } else if (newF) {
-        // Button held - show state occasionally
-        static unsigned long lastHeldMsg = 0;
-        if (millis() - lastHeldMsg > 2000) {
-          telnetPrintf("[FLAPPER] Button HELD (flapState=%d, kicking=%d, cooling=%d)\n", 
-                        flapState, kicking, coolingDown);
-          lastHeldMsg = millis();
+        if (flapState) {
+          // Rising edge - button pressed, request kick
+          kickRequested = true;
+          telnetPrintf("[FLAPPER] Button PRESSED - Kick requested (f: %d->1)\n", !flapState);
+        } else {
+          telnetPrintf("[FLAPPER] Button RELEASED (f: 1->0)\n");
         }
       }
       
