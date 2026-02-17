@@ -352,21 +352,55 @@ const flapperValueDisplay = document.getElementById('flapperValue');
 // Pointer event handlers for flapper button
 flapperBtn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     flapperBtn.setPointerCapture(e.pointerId);
     controlState.f = 1;
     flapperValueDisplay.textContent = '1';
+    console.log('[FLAPPER] Pressed (pointer)');
+    sendControlPacket();  // Send immediately
 });
 
 flapperBtn.addEventListener('pointerup', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     flapperBtn.releasePointerCapture(e.pointerId);
     controlState.f = 0;
     flapperValueDisplay.textContent = '0';
+    console.log('[FLAPPER] Released (pointer)');
+    sendControlPacket();  // Send immediately
 });
 
 flapperBtn.addEventListener('pointercancel', (e) => {
     controlState.f = 0;
     flapperValueDisplay.textContent = '0';
+    console.log('[FLAPPER] Cancelled');
+    sendControlPacket();  // Send immediately
+});
+
+// Add explicit touch event handlers for better mobile support
+flapperBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    controlState.f = 1;
+    flapperValueDisplay.textContent = '1';
+    console.log('[FLAPPER] Pressed (touch)');
+    sendControlPacket();  // Send immediately
+}, { passive: false });
+
+flapperBtn.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    controlState.f = 0;
+    flapperValueDisplay.textContent = '0';
+    console.log('[FLAPPER] Released (touch)');
+    sendControlPacket();  // Send immediately
+}, { passive: false });
+
+flapperBtn.addEventListener('touchcancel', (e) => {
+    controlState.f = 0;
+    flapperValueDisplay.textContent = '0';
+    console.log('[FLAPPER] Touch cancelled');
+    sendControlPacket();  // Send immediately
 });
 
 // Prevent context menu on long press

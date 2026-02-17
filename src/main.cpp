@@ -30,11 +30,9 @@ const char* password = "12345678";  // Minimum 8 characters for WPA2
 // Add your admin devices' MAC addresses here
 // To get MAC: Connect device, check Serial Monitor for "Client MAC: XX:XX:XX:XX:XX:XX"
 const char* adminMACs[] = {
-    "C6:6A:28:7B:36:4A",  // Admin device 1
-    "AA:BB:CC:DD:EE:02",  // Organizer's tablet (REPLACE WITH REAL MAC)
-    "AA:BB:CC:DD:EE:03",  // Backup admin device (REPLACE WITH REAL MAC)
+    "74:4C:A1:DC:49:CB",  // Admin device
 };
-const int adminMACCount = 3;  // Update this when adding/removing MACs
+const int adminMACCount = 1;  // Update this when adding/removing MACs
 
 // =============================================================================
 // Client Connection Management (SIMPLE)
@@ -74,7 +72,7 @@ void broadcastPlayerList();
 // =============================================================================
 // Servo/Flapper Pin Definition
 // =============================================================================
-#define SERVO_PIN 6
+#define SERVO_PIN 21
 
 // Servo object using ESP32Servo library (handles timers automatically)
 Servo flapperServo;
@@ -102,7 +100,7 @@ const int MOTOR_PWM_RESOLUTION = 8;   // 8-bit (0-255)
 
 // Servo angles (ESP32Servo library uses standard degrees 0-180)
 const int servoRestAngle = 0;      // Rest position
-const int servoKickAngle = 50;     // Kick position
+const int servoKickAngle = 90;     // Kick position (full throw)
 
 // =============================================================================
 // Control State Variables
@@ -110,6 +108,9 @@ const int servoKickAngle = 50;     // Kick position
 volatile int joyX = 0;
 volatile int joyY = 0;
 volatile bool flapState = false;
+
+// Motor disable flag for testing
+bool motorsDisabled = false;
 
 // Safety timeout
 #define CONTROL_TIMEOUT 500  // milliseconds
@@ -149,8 +150,8 @@ unsigned long lastBlinkToggle = 0;
 // Flapper State Machine (from reference code)
 // =============================================================================
 unsigned long previousMillis = 0;
-const long kickDelay = 500;       // Time for single kick action
-const long kickCooldown = 50;     // Delay between repeated kicks
+const long kickDelay = 1000;      // Time for single kick action (increased for servo movement)
+const long kickCooldown = 100;    // Cooldown before next kick
 bool kicking = false;
 bool coolingDown = false;
 unsigned long cooldownStart = 0;
@@ -235,6 +236,15 @@ void telnetPrintf(const char* format, ...) {
   }
 }
 
+// =============================================================================
+// Servo Control Wrapper (tracks all writes)
+// =============================================================================
+void writeServo(int angle, const char* source) {
+  telnetPrintf("@@@ SERVO WRITE: %d deg from [%s] (joyX=%d, joyY=%d) @@@\n", 
+               angle, source, joyX, joyY);
+  flapperServo.write(angle);
+}
+
 void setupTelnet() {
   telnetServer.begin();
   telnetServer.setNoDelay(true);
@@ -258,7 +268,7 @@ void handleTelnet() {
     telnetConnected = true;
     telnetPrintln("\n=== Telnet Connected ===");
     telnetPrintln("Robo Soccer Bot Telnet Monitor");
-    telnetPrintln("Commands: 't' = test servo");
+    telnetPrintln("Commands: 't' = test servo, 'q' = quit, 'm' = toggle motors");
     telnetPrintln("========================\n");
   }
   
@@ -276,25 +286,38 @@ void handleTelnet() {
       char cmd = telnetClient.read();
       if (cmd == 't' || cmd == 'T') {
         telnetPrintln("\n=== SERVO TEST ===");
-        // Test 0 degrees
-        flapperServo.write(servoRestAngle);
-        telnetPrintf("Position: %d deg\n", servoRestAngle);
-        delay(1000);
         
-        // Test 45 degrees
-        flapperServo.write(45);
-        telnetPrintln("Position: 45 deg");
-        delay(1000);
+        // Attach servo and give it time to initialize
+        flapperServo.attach(SERVO_PIN, 1000, 2000);
+        delay(50);
         
-        // Test kick angle
-        flapperServo.write(servoKickAngle);
-        telnetPrintf("Position: %d deg (kick)\n", servoKickAngle);
+        writeServo(servoRestAngle, "TEST-0deg");
         delay(1000);
+        writeServo(45, "TEST-45deg");
+        delay(1000);
+        writeServo(servoKickAngle, "TEST-kick");
+        delay(1000);
+        writeServo(servoRestAngle, "TEST-rest");
+        delay(100);  // Let servo complete final movement
         
-        // Return to 0
-        flapperServo.write(servoRestAngle);
-        telnetPrintf("Returned to %d deg\n", servoRestAngle);
-        telnetPrintln("==================\n");
+        // Detach and ground the pin
+        flapperServo.detach();
+        pinMode(SERVO_PIN, OUTPUT);
+        digitalWrite(SERVO_PIN, LOW);
+        
+        telnetPrintln("=== TEST COMPLETE (pin grounded) ===\n");
+      } else if (cmd == 'm' || cmd == 'M') {
+        motorsDisabled = !motorsDisabled;
+        if (motorsDisabled) {
+          telnetPrintln("\n*** MOTORS DISABLED - Testing servo isolation ***\n");
+          stopMotors();
+        } else {
+          telnetPrintln("\n*** MOTORS ENABLED ***\n");
+        }
+      } else if (cmd == 'q' || cmd == 'Q') {
+        telnetPrintln("\nGoodbye!\n");
+        telnetClient.stop();
+        telnetConnected = false;
       }
     }
   }
@@ -378,12 +401,61 @@ void stopMotors() {
   ledcWrite(RIGHT_MOTOR_IN2_CHANNEL, 0);
 }
 
+void disableMotorPWM() {
+  // Completely detach LEDC from pins and pull LOW to eliminate interference
+  ledcDetachPin(LEFT_MOTOR_IN1);
+  ledcDetachPin(LEFT_MOTOR_IN2);
+  ledcDetachPin(RIGHT_MOTOR_IN1);
+  ledcDetachPin(RIGHT_MOTOR_IN2);
+  
+  // Pull pins to ground
+  pinMode(LEFT_MOTOR_IN1, OUTPUT);
+  pinMode(LEFT_MOTOR_IN2, OUTPUT);
+  pinMode(RIGHT_MOTOR_IN1, OUTPUT);
+  pinMode(RIGHT_MOTOR_IN2, OUTPUT);
+  digitalWrite(LEFT_MOTOR_IN1, LOW);
+  digitalWrite(LEFT_MOTOR_IN2, LOW);
+  digitalWrite(RIGHT_MOTOR_IN1, LOW);
+  digitalWrite(RIGHT_MOTOR_IN2, LOW);
+}
+
+void enableMotorPWM() {
+  // Reattach LEDC channels to pins
+  ledcAttachPin(LEFT_MOTOR_IN1, LEFT_MOTOR_IN1_CHANNEL);
+  ledcAttachPin(LEFT_MOTOR_IN2, LEFT_MOTOR_IN2_CHANNEL);
+  ledcAttachPin(RIGHT_MOTOR_IN1, RIGHT_MOTOR_IN1_CHANNEL);
+  ledcAttachPin(RIGHT_MOTOR_IN2, RIGHT_MOTOR_IN2_CHANNEL);
+  
+  // Set to stopped state
+  stopMotors();
+}
+
 void updateMotors() {
+  // Check if motors are disabled for testing
+  if (motorsDisabled) {
+    setMotorSpeed(0, 0);
+    return;
+  }
+  
   // Differential drive mixing formula
   // left = y + x
   // right = y - x
   int leftSpeed = joyY + joyX;
   int rightSpeed = joyY - joyX;
+
+  // DEBUG: Show motor calculations periodically
+  static unsigned long lastMotorDebug = 0;
+  static int lastLeftSpeed = 0;
+  static int lastRightSpeed = 0;
+  if (millis() - lastMotorDebug >= 1000 || 
+      abs(leftSpeed - lastLeftSpeed) > 20 || 
+      abs(rightSpeed - lastRightSpeed) > 20) {
+    telnetPrintf("[MOTORS] L=%d, R=%d (from x=%d, y=%d)\n", 
+                 leftSpeed, rightSpeed, joyX, joyY);
+    lastMotorDebug = millis();
+    lastLeftSpeed = leftSpeed;
+    lastRightSpeed = rightSpeed;
+  }
 
   setMotorSpeed(leftSpeed, rightSpeed);
 }
@@ -399,55 +471,54 @@ void setupServo() {
   
   // CRITICAL: Use timer 1 explicitly (motors use timer 0)
   ESP32PWM::allocateTimer(1);
-  flapperServo.setPeriodHertz(50);  // Standard 50Hz servo
-  flapperServo.attach(SERVO_PIN, 1000, 2000);  // Min/max pulse width in microseconds
+  flapperServo.setPeriodHertz(50);
   
-  // Test servo with visible movement
-  telnetPrintf("  Testing %d degrees for 2 seconds...\n", servoKickAngle);
-  flapperServo.write(servoKickAngle);
-  delay(2000);
+  // Don't attach servo at startup - keep pin grounded to avoid interference
+  pinMode(SERVO_PIN, OUTPUT);
+  digitalWrite(SERVO_PIN, LOW);
   
-  telnetPrintln("  Returning to 0 degrees...");
-  flapperServo.write(servoRestAngle);
-  delay(1000);
-  
-  telnetPrintln("Servo initialized and tested - should have moved!");
+  telnetPrintln("Servo initialized (pin grounded to prevent interference)");
 }
 
 void updateFlapper() {
   unsigned long currentMillis = millis();
 
-  // Check if kick was requested and we're ready to kick
-  if (kickRequested && !kicking && !coolingDown) {
-    // Start kick - move to kick angle
-    telnetPrintf(">>> SERVO WRITE: %d degrees <<<\n", servoKickAngle);
-    flapperServo.write(servoKickAngle);
-    previousMillis = currentMillis;
-    kicking = true;
-    kickRequested = false;  // Clear the request
-    telnetPrintf("KICK START (Angle: %d deg)\n", servoKickAngle);
+  // DEBUG: Show flapper state every second
+  static unsigned long lastFlapperDebug = 0;
+  if (currentMillis - lastFlapperDebug >= 1000) {
+    telnetPrintf("[FLAPPER_STATE] requested=%d, flapState=%d\n",
+                 kickRequested, flapState);
+    lastFlapperDebug = currentMillis;
+  }
+
+  // Check if kick was requested (edge-triggered)
+  if (kickRequested) {
+    kickRequested = false;
+    
+    // Stop motors during kick
+    stopMotors();
+    telnetPrintln("[FLAPPER] Executing kick...");
+    
+    // Attach servo and give it time to initialize
+    flapperServo.attach(SERVO_PIN, 1000, 2000);
+    delay(50);  // Let servo library initialize
+    
+    // Execute BLOCKING kick sequence
+    writeServo(servoKickAngle, "KICK_BLOCKING");
+    delay(500);
+    writeServo(servoRestAngle, "RETURN_BLOCKING");
+    delay(100);  // Let servo complete movement
+    
+    // Detach and ground the pin to prevent interference
+    flapperServo.detach();
+    pinMode(SERVO_PIN, OUTPUT);
+    digitalWrite(SERVO_PIN, LOW);
+    
+    telnetPrintln("[FLAPPER] Kick complete (pin grounded)");
     
     // Trigger white flash for kick feedback
     showingWhiteFlash = true;
-    whiteFlashStart = currentMillis;
-  } else if (kickRequested && (kicking || coolingDown)) {
-    // Kick requested but blocked by state machine
-    telnetPrintf("[FLAPPER] Kick blocked (kicking=%d, cooling=%d)\n", kicking, coolingDown);
-    kickRequested = false;  // Clear to avoid spam
-  }
-  
-  if (kicking && currentMillis - previousMillis >= kickDelay) {
-    // Finish kick - return to 0 degrees
-    telnetPrintf(">>> SERVO WRITE: %d degrees <<<\n", servoRestAngle);
-    flapperServo.write(servoRestAngle);
-    kicking = false;
-    coolingDown = true;
-    cooldownStart = currentMillis;
-    telnetPrintf("KICK END - returning to %d deg\n", servoRestAngle);
-  } else if (coolingDown && currentMillis - cooldownStart >= kickCooldown) {
-    // Cooldown complete, ready for next kick
-    coolingDown = false;
-    telnetPrintln("COOLDOWN COMPLETE - ready for next kick");
+    whiteFlashStart = millis();
   }
 }
 
@@ -657,6 +728,14 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     int newY = doc["y"] | 0;
     // FIX: JavaScript sends 0/1, not true/false, so parse as int
     bool newF = (doc["f"] | 0) != 0;
+
+    // DEBUG: Show ALL received values
+    static unsigned long lastDebugPrint = 0;
+    if (millis() - lastDebugPrint >= 200) {
+      telnetPrintf("[WS_IN] x=%d, y=%d, f=%d (joyX=%d, joyY=%d, flapState=%d)\n", 
+                   newX, newY, newF, joyX, joyY, flapState);
+      lastDebugPrint = millis();
+    }
 
     // Admin has priority - always accept admin commands
     // Player commands only accepted if admin is not moving
