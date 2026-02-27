@@ -156,10 +156,11 @@ def generate_commit_message(project_path):
     
     return commit_msg
 
-def auto_commit_and_push():
+def auto_commit_and_push(env):
     """Main function to handle auto-commit workflow"""
     
-    project_path = r"C:\Users\Sanjay Sajeev\OneDrive\Documents\PlatformIO\Projects\web_robo_soccer"
+    # Auto-detect project path from PlatformIO environment
+    project_path = env.get("PROJECT_DIR")
     
     print("\n" + "="*70)
     print("  AUTO-COMMIT TO GITHUB")
@@ -229,5 +230,5 @@ def auto_commit_and_push():
     print("="*70 + "\n")
     print("▶ Proceeding with build...\n")
 
-# Execute before build
-auto_commit_and_push()
+# Execute before build (env is passed from PlatformIO)
+auto_commit_and_push(env)

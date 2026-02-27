@@ -430,6 +430,26 @@ void enableMotorPWM() {
   stopMotors();
 }
 
+// =============================================================================
+// Motor Control Functions
+// =============================================================================
+
+// Apply exponential curve to input for more natural control
+// Small inputs = gentle response, large inputs = aggressive response
+int applyExponentialCurve(int value, float exponent) {
+  // Normalize to -1.0 to +1.0
+  float normalized = value / 100.0;
+  
+  // Preserve sign
+  float sign = (normalized >= 0) ? 1.0 : -1.0;
+  
+  // Apply exponential curve (cube for turning feel)
+  float curved = sign * pow(fabs(normalized), exponent);
+  
+  // Scale back to -100 to +100
+  return (int)(curved * 100.0);
+}
+
 void updateMotors() {
   // Check if motors are disabled for testing
   if (motorsDisabled) {
@@ -437,11 +457,15 @@ void updateMotors() {
     return;
   }
   
+  // Apply exponential curve to turning for better control
+  // Exponent 2.5 = gentle at center, aggressive at edges
+  int curvedX = applyExponentialCurve(joyX, 2.5);
+  
   // Differential drive mixing formula
   // left = y + x
   // right = y - x
-  int leftSpeed = joyY + joyX;
-  int rightSpeed = joyY - joyX;
+  int leftSpeed = joyY + curvedX;
+  int rightSpeed = joyY - curvedX;
 
   // DEBUG: Show motor calculations periodically
   static unsigned long lastMotorDebug = 0;
@@ -450,8 +474,8 @@ void updateMotors() {
   if (millis() - lastMotorDebug >= 1000 || 
       abs(leftSpeed - lastLeftSpeed) > 20 || 
       abs(rightSpeed - lastRightSpeed) > 20) {
-    telnetPrintf("[MOTORS] L=%d, R=%d (from x=%d, y=%d)\n", 
-                 leftSpeed, rightSpeed, joyX, joyY);
+    telnetPrintf("[MOTORS] L=%d, R=%d (from x=%d->%d, y=%d)\n", 
+                 leftSpeed, rightSpeed, joyX, curvedX, joyY);
     lastMotorDebug = millis();
     lastLeftSpeed = leftSpeed;
     lastRightSpeed = rightSpeed;
@@ -495,30 +519,37 @@ void updateFlapper() {
   if (kickRequested) {
     kickRequested = false;
     
+    // Trigger white flash IMMEDIATELY for instant visual feedback
+    showingWhiteFlash = true;
+    whiteFlashStart = millis();
+    
     // Stop motors during kick
     stopMotors();
     telnetPrintln("[FLAPPER] Executing kick...");
     
-    // Attach servo and give it time to initialize
+    // Attach servo with generous initialization time
+    telnetPrintln("[FLAPPER] Attaching servo...");
     flapperServo.attach(SERVO_PIN, 1000, 2000);
-    delay(50);  // Let servo library initialize
+    delay(100);  // INCREASED: Give library more time under WiFi load
+    
+    // Verify attachment by writing rest position first
+    writeServo(servoRestAngle, "PRE_KICK_REST");
+    delay(50);  // Let servo reach rest before kicking
     
     // Execute BLOCKING kick sequence
     writeServo(servoKickAngle, "KICK_BLOCKING");
-    delay(500);
+    delay(500);  // Hold kick position
+    
     writeServo(servoRestAngle, "RETURN_BLOCKING");
-    delay(100);  // Let servo complete movement
+    delay(150);  // INCREASED: Ensure servo completes return movement
     
     // Detach and ground the pin to prevent interference
+    telnetPrintln("[FLAPPER] Detaching servo...");
     flapperServo.detach();
     pinMode(SERVO_PIN, OUTPUT);
     digitalWrite(SERVO_PIN, LOW);
     
     telnetPrintln("[FLAPPER] Kick complete (pin grounded)");
-    
-    // Trigger white flash for kick feedback
-    showingWhiteFlash = true;
-    whiteFlashStart = millis();
   }
 }
 
