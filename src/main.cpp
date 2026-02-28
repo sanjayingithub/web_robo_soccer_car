@@ -249,9 +249,16 @@ void telnetPrintf(const char* format, ...) {
 // Servo Control Wrapper (tracks all writes)
 // =============================================================================
 void writeServo(int angle, const char* source) {
-  telnetPrintf("@@@ SERVO WRITE: %d deg from [%s] (joyX=%d, joyY=%d) @@@\n", 
-               angle, source, joyX, joyY);
+  telnetPrintf("@@@ SERVO WRITE: %d deg from [%s] (attached=%d) @@@\n", 
+               angle, source, flapperServo.attached());
+  
+  if (!flapperServo.attached()) {
+    telnetPrintln("!!! ERROR: Servo not attached when trying to write !!!");
+    return;
+  }
+  
   flapperServo.write(angle);
+  telnetPrintf("@@@ Servo write command sent to pin %d @@@\n", SERVO_PIN);
 }
 
 void setupTelnet() {
@@ -516,8 +523,10 @@ void setupServo() {
   telnetPrintln("  Using ESP32Servo library (dedicated timer)");
   
   // CRITICAL: Use timer 1 explicitly (motors use timer 0)
-  ESP32PWM::allocateTimer(1);
+  int timerAllocated = ESP32PWM::allocateTimer(1);
+  telnetPrintf("  Timer allocation result: %d\n", timerAllocated);
   flapperServo.setPeriodHertz(50);
+  telnetPrintf("  Period set to 50Hz (20ms)\n");
   
   // Don't attach servo at startup - keep pin grounded to avoid interference
   pinMode(SERVO_PIN, OUTPUT);
@@ -555,7 +564,9 @@ void updateFlapper() {
     
     // Attach servo with generous initialization time
     telnetPrintln("[FLAPPER] Attaching servo...");
-    flapperServo.attach(SERVO_PIN, 1000, 2000);
+    int attachResult = flapperServo.attach(SERVO_PIN, 1000, 2000);
+    telnetPrintf("[FLAPPER] Attach result: %d (channel allocated)\n", attachResult);
+    telnetPrintf("[FLAPPER] Servo attached: %d\n", flapperServo.attached());
     delay(100);  // INCREASED: Give library more time under WiFi load
     
     // Verify attachment by writing rest position first
