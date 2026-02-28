@@ -55,6 +55,11 @@ int playerCount = 0;
 uint32_t adminClientId = 0;   // ONE admin from whitelist (0 = none)
 bool isAdminControlling = false;  // Is admin actively moving joystick?
 
+// Password authentication grace period
+IPAddress passwordAuthIP = IPAddress(0, 0, 0, 0);
+unsigned long passwordAuthTime = 0;
+const unsigned long PASSWORD_AUTH_GRACE_PERIOD = 30000; // 30 seconds
+
 // Helper functions
 int findPlayerIndex(uint32_t clientId);
 int getActivePlayerIndex();
@@ -729,9 +734,13 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
       if (submittedPassword == ADMIN_PASSWORD) {
         // Password correct - grant admin access
         adminClientId = client->id();
+        passwordAuthIP = client->remoteIP();
+        passwordAuthTime = millis();
+        
         telnetPrintln("\n=== PASSWORD ADMIN AUTHENTICATED ===");
         telnetPrintf("Client ID: %u\n", client->id());
         telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
+        telnetPrintln("Grace period: 30 seconds for reconnection");
         telnetPrintln("====================================\n");
         
         sendStatusToClient(client, "admin", "Password authentication successful");
@@ -903,12 +912,40 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         adminClientId = client->id();
         
         // Detailed admin connection info
-        telnetPrintln("\n=== ADMIN CONNECTED ===");
+        telnetPrintln("\n=== ADMIN CONNECTED (MAC) ===");
         telnetPrintf("Client ID: %u\n", client->id());
         telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
         telnetPrintf("MAC Address: %s\n", macStr.c_str());
         telnetPrintln("Access: GRANTED");
-        telnetPrintln("=======================\n");
+        telnetPrintln("=============================\n");
+        
+        sendStatusToClient(client, "admin", "Admin access granted");
+        
+        // Send current player list to admin
+        broadcastPlayerList();
+      } else if (passwordAuthIP != IPAddress(0, 0, 0, 0) && 
+                 client->remoteIP() == passwordAuthIP && 
+                 (millis() - passwordAuthTime) < PASSWORD_AUTH_GRACE_PERIOD) {
+        // Password-authenticated admin reconnecting within grace period
+        if (adminClientId != 0) {
+          telnetPrintf("✗ Admin slot occupied (Client #%u)\n", adminClientId);
+          sendStatusToClient(client, "denied", "Admin already connected");
+          client->close();
+          return;
+        }
+        
+        adminClientId = client->id();
+        
+        // Clear grace period (one-time use)
+        passwordAuthIP = IPAddress(0, 0, 0, 0);
+        passwordAuthTime = 0;
+        
+        // Detailed admin connection info
+        telnetPrintln("\n=== ADMIN CONNECTED (PASSWORD) ===");
+        telnetPrintf("Client ID: %u\n", client->id());
+        telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
+        telnetPrintln("Access: GRANTED");
+        telnetPrintln("==================================\n");
         
         sendStatusToClient(client, "admin", "Admin access granted");
         
