@@ -523,8 +523,8 @@ void setupServo() {
   telnetPrintln("  Using ESP32Servo library (dedicated timer)");
   
   // CRITICAL: Use timer 1 explicitly (motors use timer 0)
-  int timerAllocated = ESP32PWM::allocateTimer(1);
-  telnetPrintf("  Timer allocation result: %d\n", timerAllocated);
+  ESP32PWM::allocateTimer(1);
+  telnetPrintf("  Timer 1 allocated for servo\n");
   flapperServo.setPeriodHertz(50);
   telnetPrintf("  Period set to 50Hz (20ms)\n");
   
