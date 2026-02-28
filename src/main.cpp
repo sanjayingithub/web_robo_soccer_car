@@ -1054,174 +1054,24 @@ void setupWebServer() {
     request->send(LittleFS, "/controller.js", "application/javascript");
   });
 
-  // Admin password login page (special URL)
+  // Admin password login page (special URL) - MINIMAL to save RAM
   server.on("/ranga", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin Login</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: Arial, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .login-box {
-      background: rgba(255, 255, 255, 0.95);
-      border-radius: 20px;
-      padding: 40px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-      max-width: 400px;
-      width: 100%;
-      text-align: center;
-    }
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-      font-size: 28px;
-    }
-    .subtitle {
-      color: #666;
-      margin-bottom: 30px;
-      font-size: 14px;
-    }
-    input {
-      width: 100%;
-      padding: 15px;
-      margin-bottom: 20px;
-      border: 2px solid #ddd;
-      border-radius: 10px;
-      font-size: 16px;
-      transition: border-color 0.3s;
-    }
-    input:focus {
-      outline: none;
-      border-color: #667eea;
-    }
-    button {
-      width: 100%;
-      padding: 15px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      font-size: 18px;
-      font-weight: bold;
-      cursor: pointer;
-      transition: transform 0.2s;
-    }
-    button:hover {
-      transform: translateY(-2px);
-    }
-    button:active {
-      transform: translateY(0);
-    }
-    .status {
-      margin-top: 20px;
-      padding: 10px;
-      border-radius: 8px;
-      font-size: 14px;
-      display: none;
-    }
-    .status.error {
-      background: #ffebee;
-      color: #c62828;
-      display: block;
-    }
-    .status.success {
-      background: #e8f5e9;
-      color: #2e7d32;
-      display: block;
-    }
-    .status.info {
-      background: #e3f2fd;
-      color: #1565c0;
-      display: block;
-    }
-  </style>
-</head>
-<body>
-  <div class="login-box">
-    <h1>🔐 Admin Access</h1>
-    <p class="subtitle">Robo Soccer Controller</p>
-    <input type="password" id="password" placeholder="Enter Admin Password" autofocus>
-    <button onclick="login()">Login</button>
-    <div id="status" class="status"></div>
-  </div>
-
-  <script>
-    let socket;
-    
-    function showStatus(message, type) {
-      const status = document.getElementById('status');
-      status.textContent = message;
-      status.className = 'status ' + type;
-    }
-    
-    function login() {
-      const password = document.getElementById('password').value;
-      if (!password) {
-        showStatus('Please enter password', 'error');
-        return;
-      }
-      
-      showStatus('Connecting...', 'info');
-      
-      socket = new WebSocket("ws://" + window.location.hostname + "/ws");
-      
-      socket.onopen = () => {
-        // Send password authentication
-        socket.send(JSON.stringify({ adminPassword: password }));
-      };
-      
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.status === 'admin') {
-            // Success! Redirect to main controller
-            showStatus('✓ Admin access granted! Redirecting...', 'success');
-            setTimeout(() => {
-              window.location.href = '/';
-            }, 1000);
-          } else if (data.status === 'denied') {
-            showStatus('✗ ' + data.message, 'error');
-            socket.close();
-          }
-        } catch (e) {
-          console.error('Parse error:', e);
-        }
-      };
-      
-      socket.onerror = () => {
-        showStatus('Connection error', 'error');
-      };
-      
-      socket.onclose = () => {
-        if (!document.querySelector('.status.success')) {
-          showStatus('Connection closed', 'error');
-        }
-      };
-    }
-    
-    // Allow Enter key to submit
-    document.getElementById('password').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        login();
-      }
-    });
-  </script>
-</body>
-</html>
-)rawliteral";
+    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width'><title>Admin</title>"
+      "<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial;background:#667eea;display:flex;"
+      "justify-content:center;align-items:center;min-height:100vh;padding:20px}.box{background:#fff;border-radius:15px;"
+      "padding:30px;max-width:350px;width:100%;text-align:center}h1{color:#333;margin-bottom:20px}input{width:100%;"
+      "padding:12px;margin-bottom:15px;border:2px solid #ddd;border-radius:8px;font-size:16px}button{width:100%;"
+      "padding:12px;background:#667eea;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer}"
+      ".msg{margin-top:15px;padding:10px;border-radius:5px;display:none}.err{background:#fee;color:#c00;display:block}"
+      ".ok{background:#efe;color:#060;display:block}</style></head><body><div class='box'><h1>🔐 Admin</h1>"
+      "<input type='password' id='p' placeholder='Password' autofocus><button onclick='login()'>Login</button>"
+      "<div id='m' class='msg'></div></div><script>let s;function msg(t,c){let e=document.getElementById('m');"
+      "e.textContent=t;e.className='msg '+c}function login(){let p=document.getElementById('p').value;"
+      "if(!p){msg('Enter password','err');return}msg('Connecting...','ok');"
+      "s=new WebSocket('ws://'+location.hostname+'/ws');s.onopen=()=>s.send(JSON.stringify({adminPassword:p}));"
+      "s.onmessage=e=>{let d=JSON.parse(e.data);if(d.status==='admin'){msg('✓ Success!','ok');"
+      "setTimeout(()=>location.href='/',800)}else{msg('✗ '+d.message,'err');s.close()}};s.onerror=()=>msg('Error','err')}"
+      "document.getElementById('p').onkeypress=e=>{if(e.key==='Enter')login()}</script></body></html>";
     request->send(200, "text/html", html);
   });
 
