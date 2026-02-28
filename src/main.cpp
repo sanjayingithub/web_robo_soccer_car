@@ -35,9 +35,6 @@ const char* adminMACs[] = {
 };
 const int adminMACCount = 1;  // Update this when adding/removing MACs
 
-// Password authentication for admin access (fallback when MAC not whitelisted)
-const char* ADMIN_PASSWORD = "EdaMoneHappyAlle";
-
 // =============================================================================
 // Client Connection Management (SIMPLE)
 // =============================================================================
@@ -54,11 +51,6 @@ PlayerInfo playerQueue[MAX_PLAYERS_IN_QUEUE];
 int playerCount = 0;
 uint32_t adminClientId = 0;   // ONE admin from whitelist (0 = none)
 bool isAdminControlling = false;  // Is admin actively moving joystick?
-
-// Password authentication grace period
-String passwordAuthIP = "";
-unsigned long passwordAuthTime = 0;
-const unsigned long PASSWORD_AUTH_GRACE_PERIOD = 30000; // 30 seconds
 
 // Helper functions
 int findPlayerIndex(uint32_t clientId);
@@ -249,16 +241,9 @@ void telnetPrintf(const char* format, ...) {
 // Servo Control Wrapper (tracks all writes)
 // =============================================================================
 void writeServo(int angle, const char* source) {
-  telnetPrintf("@@@ SERVO WRITE: %d deg from [%s] (attached=%d) @@@\n", 
-               angle, source, flapperServo.attached());
-  
-  if (!flapperServo.attached()) {
-    telnetPrintln("!!! ERROR: Servo not attached when trying to write !!!");
-    return;
-  }
-  
+  telnetPrintf("@@@ SERVO WRITE: %d deg from [%s] (joyX=%d, joyY=%d) @@@\n", 
+               angle, source, joyX, joyY);
   flapperServo.write(angle);
-  telnetPrintf("@@@ Servo write command sent to pin %d @@@\n", SERVO_PIN);
 }
 
 void setupTelnet() {
@@ -524,9 +509,7 @@ void setupServo() {
   
   // CRITICAL: Use timer 1 explicitly (motors use timer 0)
   ESP32PWM::allocateTimer(1);
-  telnetPrintf("  Timer 1 allocated for servo\n");
   flapperServo.setPeriodHertz(50);
-  telnetPrintf("  Period set to 50Hz (20ms)\n");
   
   // Don't attach servo at startup - keep pin grounded to avoid interference
   pinMode(SERVO_PIN, OUTPUT);
@@ -564,9 +547,7 @@ void updateFlapper() {
     
     // Attach servo with generous initialization time
     telnetPrintln("[FLAPPER] Attaching servo...");
-    int attachResult = flapperServo.attach(SERVO_PIN, 1000, 2000);
-    telnetPrintf("[FLAPPER] Attach result: %d (channel allocated)\n", attachResult);
-    telnetPrintf("[FLAPPER] Servo attached: %d\n", flapperServo.attached());
+    flapperServo.attach(SERVO_PIN, 1000, 2000);
     delay(100);  // INCREASED: Give library more time under WiFi load
     
     // Verify attachment by writing rest position first
@@ -725,42 +706,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     if (error) {
       telnetPrint("JSON parse error: ");
       telnetPrintln(error.c_str());
-      return;
-    }
-
-    // Handle admin password authentication
-    if (doc.containsKey("adminPassword")) {
-      String submittedPassword = doc["adminPassword"].as<String>();
-      
-      // Check if admin slot is available (no MAC admin connected)
-      if (adminClientId != 0) {
-        // Admin slot occupied
-        telnetPrintln("[PASSWORD_AUTH] DENIED: Admin slot occupied by MAC admin");
-        sendStatusToClient(client, "denied", "Admin slot already occupied");
-        client->close();
-        return;
-      }
-      
-      // Check password
-      if (submittedPassword == ADMIN_PASSWORD) {
-        // Password correct - grant admin access
-        adminClientId = client->id();
-        passwordAuthIP = client->remoteIP().toString();
-        passwordAuthTime = millis();
-        
-        telnetPrintln("\n=== PASSWORD ADMIN AUTHENTICATED ===");
-        telnetPrintf("Client ID: %u\n", client->id());
-        telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
-        telnetPrintln("Grace period: 30 seconds for reconnection");
-        telnetPrintln("====================================\n");
-        
-        sendStatusToClient(client, "admin", "Password authentication successful");
-      } else {
-        // Wrong password
-        telnetPrintln("[PASSWORD_AUTH] DENIED: Incorrect password");
-        sendStatusToClient(client, "denied", "Incorrect password");
-        client->close();
-      }
       return;
     }
 
@@ -923,40 +868,12 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         adminClientId = client->id();
         
         // Detailed admin connection info
-        telnetPrintln("\n=== ADMIN CONNECTED (MAC) ===");
+        telnetPrintln("\n=== ADMIN CONNECTED ===");
         telnetPrintf("Client ID: %u\n", client->id());
         telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
         telnetPrintf("MAC Address: %s\n", macStr.c_str());
         telnetPrintln("Access: GRANTED");
-        telnetPrintln("=============================\n");
-        
-        sendStatusToClient(client, "admin", "Admin access granted");
-        
-        // Send current player list to admin
-        broadcastPlayerList();
-      } else if (passwordAuthIP.length() > 0 && 
-                 client->remoteIP().toString() == passwordAuthIP && 
-                 (millis() - passwordAuthTime) < PASSWORD_AUTH_GRACE_PERIOD) {
-        // Password-authenticated admin reconnecting within grace period
-        if (adminClientId != 0) {
-          telnetPrintf("✗ Admin slot occupied (Client #%u)\n", adminClientId);
-          sendStatusToClient(client, "denied", "Admin already connected");
-          client->close();
-          return;
-        }
-        
-        adminClientId = client->id();
-        
-        // Clear grace period (one-time use)
-        passwordAuthIP = "";
-        passwordAuthTime = 0;
-        
-        // Detailed admin connection info
-        telnetPrintln("\n=== ADMIN CONNECTED (PASSWORD) ===");
-        telnetPrintf("Client ID: %u\n", client->id());
-        telnetPrintf("IP Address: %s\n", client->remoteIP().toString().c_str());
-        telnetPrintln("Access: GRANTED");
-        telnetPrintln("==================================\n");
+        telnetPrintln("=======================\n");
         
         sendStatusToClient(client, "admin", "Admin access granted");
         
@@ -1052,27 +969,6 @@ void setupWebServer() {
 
   server.on("/controller.js", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(LittleFS, "/controller.js", "application/javascript");
-  });
-
-  // Admin password login page (special URL) - MINIMAL to save RAM
-  server.on("/ranga", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width'><title>Admin</title>"
-      "<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial;background:#667eea;display:flex;"
-      "justify-content:center;align-items:center;min-height:100vh;padding:20px}.box{background:#fff;border-radius:15px;"
-      "padding:30px;max-width:350px;width:100%;text-align:center}h1{color:#333;margin-bottom:20px}input{width:100%;"
-      "padding:12px;margin-bottom:15px;border:2px solid #ddd;border-radius:8px;font-size:16px}button{width:100%;"
-      "padding:12px;background:#667eea;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer}"
-      ".msg{margin-top:15px;padding:10px;border-radius:5px;display:none}.err{background:#fee;color:#c00;display:block}"
-      ".ok{background:#efe;color:#060;display:block}</style></head><body><div class='box'><h1>🔐 Admin</h1>"
-      "<input type='password' id='p' placeholder='Password' autofocus><button onclick='login()'>Login</button>"
-      "<div id='m' class='msg'></div></div><script>let s;function msg(t,c){let e=document.getElementById('m');"
-      "e.textContent=t;e.className='msg '+c}function login(){let p=document.getElementById('p').value;"
-      "if(!p){msg('Enter password','err');return}msg('Connecting...','ok');"
-      "s=new WebSocket('ws://'+location.hostname+'/ws');s.onopen=()=>s.send(JSON.stringify({adminPassword:p}));"
-      "s.onmessage=e=>{let d=JSON.parse(e.data);if(d.status==='admin'){msg('✓ Success!','ok');"
-      "setTimeout(()=>location.href='/',800)}else{msg('✗ '+d.message,'err');s.close()}};s.onerror=()=>msg('Error','err')}"
-      "document.getElementById('p').onkeypress=e=>{if(e.key==='Enter')login()}</script></body></html>";
-    request->send(200, "text/html", html);
   });
 
   // Handle 404
