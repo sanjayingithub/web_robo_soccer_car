@@ -7,6 +7,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <esp_wifi.h>
 #include <ESP32Servo.h>  // Proper servo library with timer management
+#include <cmath>         // For pow() and fabs() in exponential curve
 
 // =============================================================================
 // Telnet Server Configuration
@@ -437,8 +438,15 @@ void enableMotorPWM() {
 // Apply exponential curve to input for more natural control
 // Small inputs = gentle response, large inputs = aggressive response
 int applyExponentialCurve(int value, float exponent) {
+  // Handle zero input immediately
+  if (value == 0) return 0;
+  
   // Normalize to -1.0 to +1.0
   float normalized = value / 100.0;
+  
+  // Clamp to valid range (safety check)
+  if (normalized > 1.0) normalized = 1.0;
+  if (normalized < -1.0) normalized = -1.0;
   
   // Preserve sign
   float sign = (normalized >= 0) ? 1.0 : -1.0;
@@ -447,7 +455,13 @@ int applyExponentialCurve(int value, float exponent) {
   float curved = sign * pow(fabs(normalized), exponent);
   
   // Scale back to -100 to +100
-  return (int)(curved * 100.0);
+  int result = (int)(curved * 100.0);
+  
+  // Clamp result to valid range
+  if (result > 100) result = 100;
+  if (result < -100) result = -100;
+  
+  return result;
 }
 
 void updateMotors() {
@@ -522,6 +536,10 @@ void updateFlapper() {
     // Trigger white flash IMMEDIATELY for instant visual feedback
     showingWhiteFlash = true;
     whiteFlashStart = millis();
+    
+    // Manually update NeoPixel NOW before blocking delays
+    neopixel.setPixelColor(0, neopixel.Color(NEOPIXEL_BRIGHTNESS, NEOPIXEL_BRIGHTNESS, NEOPIXEL_BRIGHTNESS));
+    neopixel.show();
     
     // Stop motors during kick
     stopMotors();
