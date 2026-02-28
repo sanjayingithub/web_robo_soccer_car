@@ -56,7 +56,7 @@ uint32_t adminClientId = 0;   // ONE admin from whitelist (0 = none)
 bool isAdminControlling = false;  // Is admin actively moving joystick?
 
 // Password authentication grace period
-IPAddress passwordAuthIP = IPAddress(0, 0, 0, 0);
+String passwordAuthIP = "";
 unsigned long passwordAuthTime = 0;
 const unsigned long PASSWORD_AUTH_GRACE_PERIOD = 30000; // 30 seconds
 
@@ -734,7 +734,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
       if (submittedPassword == ADMIN_PASSWORD) {
         // Password correct - grant admin access
         adminClientId = client->id();
-        passwordAuthIP = client->remoteIP();
+        passwordAuthIP = client->remoteIP().toString();
         passwordAuthTime = millis();
         
         telnetPrintln("\n=== PASSWORD ADMIN AUTHENTICATED ===");
@@ -923,8 +923,8 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         
         // Send current player list to admin
         broadcastPlayerList();
-      } else if (passwordAuthIP != IPAddress(0, 0, 0, 0) && 
-                 client->remoteIP() == passwordAuthIP && 
+      } else if (passwordAuthIP.length() > 0 && 
+                 client->remoteIP().toString() == passwordAuthIP && 
                  (millis() - passwordAuthTime) < PASSWORD_AUTH_GRACE_PERIOD) {
         // Password-authenticated admin reconnecting within grace period
         if (adminClientId != 0) {
@@ -937,7 +937,7 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         adminClientId = client->id();
         
         // Clear grace period (one-time use)
-        passwordAuthIP = IPAddress(0, 0, 0, 0);
+        passwordAuthIP = "";
         passwordAuthTime = 0;
         
         // Detailed admin connection info
