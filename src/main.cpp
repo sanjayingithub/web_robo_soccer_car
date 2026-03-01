@@ -36,6 +36,25 @@ const char* adminMACs[] = {
 const int adminMACCount = 1;  // Update this when adding/removing MACs
 
 // =============================================================================
+// MAC->IP Mapping Table (fixes admin detection bug)
+// =============================================================================
+struct MACIPMapping {
+  uint8_t mac[6];
+  IPAddress ip;
+  unsigned long lastSeen;
+  bool valid;
+};
+
+const int MAX_MAC_MAPPINGS = 8;  // Support up to 8 simultaneous connections
+MACIPMapping macIPTable[MAX_MAC_MAPPINGS];
+int mappingCount = 0;
+
+// Forward declarations for mapping functions
+void addOrUpdateMACMapping(uint8_t* mac, IPAddress ip);
+void removeMACMapping(uint8_t* mac);
+void cleanupStaleMappings();
+
+// =============================================================================
 // Client Connection Management (SIMPLE)
 // =============================================================================
 const int MAX_PLAYERS_IN_QUEUE = 3;  // 1 active + 2 waiting
@@ -508,7 +527,7 @@ void setupServo() {
   telnetPrintln("  Using ESP32Servo library (dedicated timer)");
   
   // CRITICAL: Use timer 1 explicitly (motors use timer 0)
-  ESP32PWM::allocateTimer(1);
+  // ESP32PWM::allocateTimer(1);  // Commented - returns void, auto-allocated
   flapperServo.setPeriodHertz(50);
   
   // Don't attach servo at startup - keep pin grounded to avoid interference
@@ -675,11 +694,68 @@ void broadcastPlayerList() {
 }
 
 // =============================================================================
+// WiFi Event Handler (tracks MAC->IP mappings)
+// =============================================================================
+
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_AP_STACONNECTED: {
+      // Device connected to AP - get MAC and wait for IP assignment
+      uint8_t* mac = info.wifi_ap_staconnected.mac;
+      telnetPrintf("[WiFi] Device connected: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      break;
+    }
+    
+    case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED: {
+      // Device got IP - now we can map MAC->IP
+      wifi_sta_list_t stationList;
+      esp_err_t err = esp_wifi_ap_get_sta_list(&stationList);
+      
+      if (err == ESP_OK && stationList.num > 0) {
+        // Get the most recently connected device (assumption: last in list just got IP)
+        uint8_t* mac = stationList.sta[stationList.num - 1].mac;
+        IPAddress assignedIP = IPAddress(info.wifi_ap_staipassigned.ip.addr);
+        
+        addOrUpdateMACMapping(mac, assignedIP);
+        
+        telnetPrintf("[WiFi] IP assigned: %s -> %02X:%02X:%02X:%02X:%02X:%02X\n",
+                     assignedIP.toString().c_str(),
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      }
+      break;
+    }
+    
+    case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
+      // Device disconnected - remove from mapping
+      uint8_t* mac = info.wifi_ap_stadisconnected.mac;
+      removeMACMapping(mac);
+      
+      telnetPrintf("[WiFi] Device disconnected: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      break;
+    }
+    
+    default:
+      break;
+  }
+}
+
+// =============================================================================
 // WiFi and WebSocket Functions
 // =============================================================================
 
 void setupWiFi() {
   telnetPrintln("\n=== Starting WiFi AP ===");
+  
+  // Initialize MAC->IP mapping table
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    macIPTable[i].valid = false;
+  }
+  mappingCount = 0;
+  
+  // Register WiFi event handler BEFORE starting AP
+  WiFi.onEvent(onWiFiEvent);
   
   // Configure as Access Point
   WiFi.mode(WIFI_AP);
@@ -690,6 +766,7 @@ void setupWiFi() {
   telnetPrintln(IP.toString());
   telnetPrint("SSID: ");
   telnetPrintln(ssid);
+  telnetPrintln("WiFi event tracking enabled");
   telnetPrintln("========================");
 }
 
@@ -1004,18 +1081,114 @@ String macToString(uint8_t* mac) {
   return String(macStr);
 }
 
-bool getClientMAC(IPAddress ip, uint8_t* mac) {
-  // Get list of connected stations from AP
-  wifi_sta_list_t stationList;
-  esp_err_t err = esp_wifi_ap_get_sta_list(&stationList);
-  
-  if (err != ESP_OK || stationList.num == 0) {
-    return false;
+// Add or update MAC->IP mapping in table
+void addOrUpdateMACMapping(uint8_t* mac, IPAddress ip) {
+  // Check if MAC already exists - update it
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    if (macIPTable[i].valid) {
+      bool macMatch = true;
+      for (int j = 0; j < 6; j++) {
+        if (macIPTable[i].mac[j] != mac[j]) {
+          macMatch = false;
+          break;
+        }
+      }
+      if (macMatch) {
+        // Update existing entry
+        macIPTable[i].ip = ip;
+        macIPTable[i].lastSeen = millis();
+        telnetPrintf("[MAC_TABLE] Updated: %s -> %s\n", 
+                     ip.toString().c_str(), macToString(mac).c_str());
+        return;
+      }
+    }
   }
   
-  // Return the most recent connection's MAC (last in list)
-  memcpy(mac, stationList.sta[stationList.num - 1].mac, 6);
-  return true;
+  // Find empty slot
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    if (!macIPTable[i].valid) {
+      memcpy(macIPTable[i].mac, mac, 6);
+      macIPTable[i].ip = ip;
+      macIPTable[i].lastSeen = millis();
+      macIPTable[i].valid = true;
+      mappingCount++;
+      
+      telnetPrintf("[MAC_TABLE] Added: %s -> %s (total: %d)\n",
+                   ip.toString().c_str(), macToString(mac).c_str(), mappingCount);
+      return;
+    }
+  }
+  
+  // Table full - remove oldest entry
+  int oldestIndex = 0;
+  unsigned long oldestTime = macIPTable[0].lastSeen;
+  for (int i = 1; i < MAX_MAC_MAPPINGS; i++) {
+    if (macIPTable[i].valid && macIPTable[i].lastSeen < oldestTime) {
+      oldestTime = macIPTable[i].lastSeen;
+      oldestIndex = i;
+    }
+  }
+  
+  memcpy(macIPTable[oldestIndex].mac, mac, 6);
+  macIPTable[oldestIndex].ip = ip;
+  macIPTable[oldestIndex].lastSeen = millis();
+  macIPTable[oldestIndex].valid = true;
+  
+  telnetPrintf("[MAC_TABLE] Replaced oldest: %s -> %s\n",
+               ip.toString().c_str(), macToString(mac).c_str());
+}
+
+// Remove MAC from mapping table
+void removeMACMapping(uint8_t* mac) {
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    if (macIPTable[i].valid) {
+      bool macMatch = true;
+      for (int j = 0; j < 6; j++) {
+        if (macIPTable[i].mac[j] != mac[j]) {
+          macMatch = false;
+          break;
+        }
+      }
+      if (macMatch) {
+        macIPTable[i].valid = false;
+        mappingCount--;
+        telnetPrintf("[MAC_TABLE] Removed: %s (total: %d)\n",
+                     macToString(mac).c_str(), mappingCount);
+        return;
+      }
+    }
+  }
+}
+
+// Clean up stale mappings (called periodically)
+void cleanupStaleMappings() {
+  unsigned long now = millis();
+  const unsigned long STALE_TIMEOUT = 300000;  // 5 minutes
+  
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    if (macIPTable[i].valid && (now - macIPTable[i].lastSeen) > STALE_TIMEOUT) {
+      telnetPrintf("[MAC_TABLE] Cleaning stale entry: %s\n",
+                   macToString(macIPTable[i].mac).c_str());
+      macIPTable[i].valid = false;
+      mappingCount--;
+    }
+  }
+}
+
+// FIXED: Now correctly looks up MAC by IP using our mapping table
+bool getClientMAC(IPAddress ip, uint8_t* mac) {
+  // Search mapping table for this IP
+  for (int i = 0; i < MAX_MAC_MAPPINGS; i++) {
+    if (macIPTable[i].valid && macIPTable[i].ip == ip) {
+      memcpy(mac, macIPTable[i].mac, 6);
+      macIPTable[i].lastSeen = millis();  // Update last seen time
+      return true;
+    }
+  }
+  
+  // Not found in mapping table
+  telnetPrintf("[MAC_TABLE] WARNING: No MAC found for IP %s\n", ip.toString().c_str());
+  return false;
 }
 
 bool isAdminMAC(uint8_t* mac) {
