@@ -815,6 +815,10 @@ void handleTelnet() {
         
         // Check authentication first
         if (!telnetAuthenticated) {
+          // Debug output to see what we received
+          telnetPrintf("[DEBUG] Received: '%s' (len=%d)\n", telnetCommandBuffer.c_str(), telnetCommandBuffer.length());
+          telnetPrintf("[DEBUG] Expected: '%s' (len=%d)\n", TELNET_PASSWORD, strlen(TELNET_PASSWORD));
+          
           if (telnetCommandBuffer == TELNET_PASSWORD) {
             telnetAuthenticated = true;
             telnetPrintln("\n=== Access Granted ===");
