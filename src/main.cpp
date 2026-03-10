@@ -7,6 +7,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <ESP32Servo.h>
 #include <ESP32PWM.h>
+#include <esp_task_wdt.h>
 #include <cmath>
 
 // =============================================================================
@@ -15,7 +16,9 @@
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 bool telnetConnected = false;
+bool telnetAuthenticated = false;  // Require password for admin commands
 String telnetCommandBuffer = "";
+const char* TELNET_PASSWORD = "admin123";  // Admin password
 
 // =============================================================================
 // WiFi Access Point Configuration
@@ -231,8 +234,20 @@ void setupMotors() {
   stopMotors();
   delay(50);
   
-  // CRITICAL: Mark motor channels as occupied in ESP32PWM library
-  // This prevents servo library from allocating channels 0-3 and interfering with motors
+  // CRITICAL FIX: Reserve motor PWM channels in ESP32PWM library allocation table
+  // 
+  // Problem: ESP32Servo library uses ESP32PWM for channel allocation. When servo.attach()
+  // is called, ESP32PWM::allocatenext() searches for free channels. Without this fix,
+  // the library doesn't know channels 0-3 are manually allocated via ledcSetup(), so it
+  // may reallocate them for the servo, causing LEDC timer conflicts and motor speed
+  // asymmetry after servo operations.
+  // 
+  // Solution: Mark channels 0-3 as "occupied" by writing non-null pointers to the
+  // ESP32PWM::ChannelUsed[] array. This forces the servo library to use channels 4-5
+  // (Timer 2) instead, maintaining hardware isolation between motors and servo.
+  // 
+  // Why 0x1? Any non-null pointer value signals "occupied". Using 0x1 (fake pointer)
+  // instead of actual object address prevents the library from trying to dereference it.
   ESP32PWM::ChannelUsed[LEFT_MOTOR_IN1_CHANNEL] = (ESP32PWM*)0x1;  // Fake pointer = occupied
   ESP32PWM::ChannelUsed[LEFT_MOTOR_IN2_CHANNEL] = (ESP32PWM*)0x1;
   ESP32PWM::ChannelUsed[RIGHT_MOTOR_IN1_CHANNEL] = (ESP32PWM*)0x1;
@@ -275,7 +290,20 @@ void setMotorSpeed(int leftSpeed, int rightSpeed) {
     lastDebug = millis();
   }
 
-  // CRITICAL: Write all PWM values atomically (no interruptions between left and right)
+  // CRITICAL FIX: Atomic PWM updates to prevent motor speed asymmetry
+  //
+  // Problem: ESP32-C3 is single-core with WiFi on same core. WiFi stack generates frequent
+  // interrupts (50-200μs) for packet handling. If WiFi interrupts occur between left and
+  // right motor PWM updates, it creates temporal offset where one motor receives new command
+  // before the other. Over many loop iterations (50Hz), these microsecond delays accumulate
+  // into noticeable speed differences.
+  //
+  // Solution: Disable interrupts during all four motor register writes. This ensures both
+  // motors receive synchronized commands. The LEDC hardware peripheral continues generating
+  // PWM waveforms unaffected - only the register update timing is protected.
+  //
+  // Note: This is needed despite LEDC being hardware-independent because we're protecting
+  // the software register writes, not the PWM generation itself.
   noInterrupts();
   
   // Left motor
@@ -350,6 +378,12 @@ void updateFlapper() {
     neopixel.setPixelColor(0, neopixel.Color(NEOPIXEL_BRIGHTNESS, NEOPIXEL_BRIGHTNESS, NEOPIXEL_BRIGHTNESS));
     neopixel.show();
     
+    // Stop motors during servo operation for two reasons:
+    // 1. Power: Servo draws high inrush current (500mA-1A), combined with motors could
+    //    cause voltage sag and brownout reset
+    // 2. Blocking delays: The delay() calls below freeze the entire loop, preventing
+    //    updateMotors() from running and making the robot unresponsive to joystick input
+    // Total kick duration: 275ms (barely noticeable to user)
     stopMotors();
     telnetPrintln("[KICK]");
     
@@ -360,7 +394,7 @@ void updateFlapper() {
     delay(50);
     
     flapperServo.write(servoKickAngle);
-    delay(175);
+    delay(175);  // Main kick action
     
     flapperServo.write(servoRestAngle);
     delay(50);
@@ -510,6 +544,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len, AsyncWebSocket
     joyY = newY;
     
     // Edge detection - only trigger on rising edge (button press)
+    // This prevents kick spamming: button held = one kick, not continuous kicks
     static bool lastKickState = false;
     if (newKick && !lastKickState) {
       kickRequested = true;
@@ -645,7 +680,12 @@ void readBatteryVoltage() {
 void updateNeoPixel() {
   unsigned long currentMillis = millis();
   
+  // Priority-based LED indicator system:
+  // Higher priority states take precedence over lower ones. System checks from
+  // priority 1 (highest) to 5 (lowest) and displays first active state.
+  
   // PRIORITY 1: Motor lock by admin - RED SOLID
+  // Indicates motors are disabled by admin command, robot won't respond to controls
   if (motorsLockedByAdmin) {
     neopixel.setPixelColor(0, neopixel.Color(NEOPIXEL_BRIGHTNESS, 0, 0));  // RED
     neopixel.show();
@@ -653,6 +693,7 @@ void updateNeoPixel() {
   }
   
   // PRIORITY 2: Kick active - WHITE FLASH (200ms)
+  // Brief flash provides immediate feedback for kick button press
   if (showingWhiteFlash && currentMillis - whiteFlashStart >= WHITE_FLASH_DURATION) {
     showingWhiteFlash = false;
   }
@@ -664,6 +705,7 @@ void updateNeoPixel() {
   }
   
   // PRIORITY 3: Player disconnect - PURPLE BLINK (2 seconds, 200ms on/off)
+  // Shows when last player disconnects, alerts admin that robot is idle
   if (currentMillis - lastDisconnectTime < 2000) {
     if (currentMillis - lastBlinkToggle >= 200) {
       blinkState = !blinkState;
@@ -758,17 +800,9 @@ void handleTelnet() {
     }
     telnetClient = telnetServer.available();
     telnetConnected = true;
+    telnetAuthenticated = false;  // Reset authentication on new connection
     telnetPrintln("\n=== Telnet Connected ===");
-    telnetPrintln("Admin Commands:");
-    telnetPrintln("  'p' - Print player list");
-    telnetPrintln("  's' - Toggle motor lock (LED shows RED)");
-    telnetPrintln("  'n' - Next user (skip current)");
-    telnetPrintln("  'rm <#>' - Remove player by position (1-3)");
-    #ifdef BOT_PACHAVANDI
-      telnetPrintln("  't' - Toggle LED mode (battery/green)");
-    #elif BOT_NEELAVANDI
-      telnetPrintln("  't' - Toggle LED mode (battery/blue)");
-    #endif
+    telnetPrintln("Enter password for admin access:");
   }
   
   // Read and parse commands
@@ -778,6 +812,32 @@ void handleTelnet() {
     if (c == '\n' || c == '\r') {
       if (telnetCommandBuffer.length() > 0) {
         telnetCommandBuffer.trim();
+        
+        // Check authentication first
+        if (!telnetAuthenticated) {
+          if (telnetCommandBuffer == TELNET_PASSWORD) {
+            telnetAuthenticated = true;
+            telnetPrintln("\n=== Access Granted ===");
+            telnetPrintln("Admin Commands:");
+            telnetPrintln("  'p' - Print player list");
+            telnetPrintln("  's' - Toggle motor lock (LED shows RED)");
+            telnetPrintln("  'n' - Next user (skip current)");
+            telnetPrintln("  'rm <#>' - Remove player by position (1-3)");
+            #ifdef BOT_PACHAVANDI
+              telnetPrintln("  't' - Toggle LED mode (battery/green)");
+            #elif BOT_NEELAVANDI
+              telnetPrintln("  't' - Toggle LED mode (battery/blue)");
+            #endif
+          } else {
+            telnetPrintln("Incorrect password. Disconnecting.");
+            telnetClient.stop();
+            telnetConnected = false;
+            telnetAuthenticated = false;
+          }
+          telnetCommandBuffer = "";
+          return;
+        }
+        
         telnetCommandBuffer.toLowerCase();
         
         // Print player list
@@ -796,12 +856,36 @@ void handleTelnet() {
           }
         }
         
-        // Remove player by position (rm 1, rm 2, rm 3)
+        // Remove player by position (rm 1, rm 2, rm 3 )
         else if (telnetCommandBuffer.startsWith("rm ")) {
           String posStr = telnetCommandBuffer.substring(3);
           posStr.trim();
+          
+          // Input validation: Check if position string is valid
+          if (posStr.length() == 0 || posStr.length() > 2) {
+            telnetPrintln("[ADMIN] Invalid position format. Usage: rm <1-3>");
+            telnetCommandBuffer = "";
+            continue;
+          }
+          
+          // Validate all characters are digits
+          bool isValid = true;
+          for (unsigned int i = 0; i < posStr.length(); i++) {
+            if (!isdigit(posStr.charAt(i))) {
+              isValid = false;
+              break;
+            }
+          }
+          
+          if (!isValid) {
+            telnetPrintln("[ADMIN] Invalid position format. Usage: rm <1-3>");
+            telnetCommandBuffer = "";
+            continue;
+          }
+          
           int position = posStr.toInt();
           
+          // Range validation
           if (position < 1 || position > playerCount) {
             telnetPrintf("[ADMIN] Invalid position: %d (valid: 1-%d)\n", position, playerCount);
           } else {
@@ -922,6 +1006,7 @@ void handleTelnet() {
   if (telnetConnected && telnetClient && !telnetClient.connected()) {
     telnetClient.stop();
     telnetConnected = false;
+    telnetAuthenticated = false;  // Clear authentication on disconnect
     telnetCommandBuffer = "";
   }
 }
@@ -936,6 +1021,13 @@ void setup() {
   telnetPrintln("\n\n=================================");
   telnetPrintln("Robo Soccer Bot - SIMPLE VERSION");
   telnetPrintln("=================================\n");
+
+  // Initialize watchdog timer: 10 second timeout
+  // If loop() doesn't call esp_task_wdt_reset() within 10 seconds, system will auto-reboot
+  // This prevents hangs from WiFi stack crashes or infinite loops
+  esp_task_wdt_init(10, true);  // 10 second timeout, panic on trigger
+  esp_task_wdt_add(NULL);       // Add current task to watchdog monitoring
+  telnetPrintln("Watchdog timer enabled (10s timeout)");
 
   setupMotors();
   setupServo();
@@ -952,6 +1044,10 @@ void setup() {
 }
 
 void loop() {
+  // Feed the watchdog timer to prevent auto-reboot
+  // This tells the watchdog "system is still running normally"
+  esp_task_wdt_reset();
+  
   ws.cleanupClients();
   handleTelnet();
   updateFlapper();
