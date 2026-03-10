@@ -18,7 +18,7 @@ WiFiClient telnetClient;
 bool telnetConnected = false;
 bool telnetAuthenticated = false;  // Require password for admin commands
 String telnetCommandBuffer = "";
-const char* TELNET_PASSWORD = "admin123";  // Admin password
+const char* TELNET_PASSWORD = "29A";  // Admin password
 
 // =============================================================================
 // WiFi Access Point Configuration
@@ -425,6 +425,13 @@ int getActivePlayerIndex() {
 }
 
 void setActivePlayer(int index) {
+  // Stop motors and reset joystick when switching active player
+  // This prevents motors from stuck running with previous player's commands
+  stopMotors();
+  joyX = 0;
+  joyY = 0;
+  lastControlTime = millis();
+  
   for (int i = 0; i < playerCount; i++) {
     playerQueue[i].isActive = false;
   }
@@ -601,8 +608,13 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
     case WS_EVT_DISCONNECT: {
       telnetPrintf("Player disconnected: ID %u\n", client->id());
       removePlayer(client->id());
+      
+      // Always reset motors/joystick on disconnect to prevent stuck commands
+      stopMotors();
+      joyX = 0;
+      joyY = 0;
+      
       if (playerCount == 0) {
-        stopMotors();
         lastDisconnectTime = millis();
       }
       break;
@@ -918,6 +930,11 @@ void handleTelnet() {
             
             // If we removed the active player, activate the new first player
             if (wasActive && playerCount > 0) {
+              stopMotors();
+              joyX = 0;
+              joyY = 0;
+              lastControlTime = millis();
+              
               playerQueue[0].isActive = true;
               telnetPrintf("[ADMIN] Removed '%s' (pos %d), control given to '%s'\n", 
                           removedNickname.c_str(), position, playerQueue[0].nickname.c_str());
@@ -927,6 +944,8 @@ void handleTelnet() {
                           removedNickname.c_str(), position);
               if (playerCount == 0) {
                 stopMotors();
+                joyX = 0;
+                joyY = 0;
               }
               broadcastPlayerList();
             }
@@ -968,6 +987,11 @@ void handleTelnet() {
             
             // Activate next player if any
             if (playerCount > 0) {
+              stopMotors();
+              joyX = 0;
+              joyY = 0;
+              lastControlTime = millis();
+              
               playerQueue[0].isActive = true;
               telnetPrintf("[ADMIN] Removed '%s', control given to '%s'\n", 
                           removedNickname.c_str(), playerQueue[0].nickname.c_str());
@@ -975,6 +999,9 @@ void handleTelnet() {
               // Update all players' control status
               broadcastPlayerList();
             } else {
+              stopMotors();
+              joyX = 0;
+              joyY = 0;
               telnetPrintf("[ADMIN] Removed '%s', no players in queue\n", removedNickname.c_str());
               stopMotors();
             }
