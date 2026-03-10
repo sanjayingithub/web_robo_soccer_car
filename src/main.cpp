@@ -815,11 +815,16 @@ void handleTelnet() {
         
         // Check authentication first
         if (!telnetAuthenticated) {
-          // Debug output to see what we received
-          telnetPrintf("[DEBUG] Received: '%s' (len=%d)\n", telnetCommandBuffer.c_str(), telnetCommandBuffer.length());
-          telnetPrintf("[DEBUG] Expected: '%s' (len=%d)\n", TELNET_PASSWORD, strlen(TELNET_PASSWORD));
+          // Clean password input
+          String cleanPassword = telnetCommandBuffer;
+          cleanPassword.trim();
           
-          if (telnetCommandBuffer == TELNET_PASSWORD) {
+          // PuTTY terminal emulator sends leading apostrophe (ASCII 39) - remove it
+          if (cleanPassword.length() > 0 && cleanPassword.charAt(0) == 39) {
+            cleanPassword = cleanPassword.substring(1);
+          }
+          
+          if (cleanPassword == TELNET_PASSWORD) {
             telnetAuthenticated = true;
             telnetPrintln("\n=== Access Granted ===");
             telnetPrintln("Admin Commands:");
